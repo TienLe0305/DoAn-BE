@@ -1,20 +1,31 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, APIRouter,Query
 from starlette.requests import Request
-from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-from authlib.integrations.starlette_client import OAuth, OAuthError
+from authlib.integrations.starlette_client import OAuth
 from fastapi.responses import JSONResponse
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import requests
+from starlette.responses import StreamingResponse
+import asyncio
+import json
+import aiohttp
+import motor.motor_asyncio
+from bson import json_util
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 
 app = FastAPI()
+router = APIRouter()
+session = aiohttp.ClientSession()
 
 origins = [
-    "http://localhost:3000",  # React
-    "http://localhost:8000",  # Angular
-    "http://localhost:8080",  # Vue.js
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://localhost:8080",
+    "https://www.google.com",
 ]
 
 app.add_middleware(
@@ -25,9 +36,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(SessionMiddleware, secret_key=" secret")
-CLIENT_ID = "1080662676746-s5ps31peevt9jns27u8r92l106phn80a.apps.googleusercontent.com"
-CLIENT_SECRET = "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"
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET"))
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv("MONGODB_URI"))
+db = client['DoAn']
+collection = db['chat_history']
 
 oauth = OAuth()
 oauth.register(
@@ -42,6 +56,66 @@ oauth.register(
     }
 )
 
+async def save_chat_history(user_ask: str, assistant_answer: str):
+    document = {"user_ask": user_ask, "assistant_answer": assistant_answer}
+    result = await collection.insert_one(document)
+    return result.inserted_id
+
+@app.get("/ext/chat", response_class=StreamingResponse)
+async def chat(query: str = Query(...)):
+    headers = {
+         'Authorization': os.getenv("GPT_AUTHORIZATION")
+    }
+    data = {
+        'model': 'gpt-3.5-turbo',
+        'messages': [
+            {'role': 'system', 'content': 'You are a helpful assistant.'},
+            {'role': 'user', 'content': query}
+        ]
+    }
+
+    async def event_generator():
+        for attempt in range(2):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post('https://api.openai.com/v1/chat/completions', headers=headers,
+                                            json=data) as response:
+                        if response.status == 200:
+                            openai_response = await response.json()
+
+                            for part in openai_response['choices']:
+                                text = part['message']['content'] or ""
+                                botResponse = ""
+
+                                for char in text:
+                                    botResponse += char
+                                    print(botResponse)
+                                    data_to_send = f"event: response\ndata: {json.dumps({'text': char})}\n\n"
+                                    yield data_to_send
+                                await save_chat_history(query, botResponse)
+                                yield "event: done\ndata: {}\n\n"
+                                return
+                            else:
+                                error_message = await response.text()
+                                print(f"OpenAI API request failed with status {response.status}: {error_message}")
+            except aiohttp.ClientError as e:
+                print(f"Error occurred while making the request: {e}")
+                await asyncio.sleep(1)
+
+        yield "event: done\ndata: {}\n\n"
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+class JSONEncoder(json.JSONEncoder):
+    def default(self, o):
+        return json_util.default(o)
+@app.get("/ext/chat_history")
+async def get_chat_history():
+    cursor = collection.find({})
+    chat_history = []
+    async for document in cursor:
+        chat_history.append(document)
+    return JSONResponse(status_code=200, content=json.loads(JSONEncoder().encode(chat_history)))
+
 @app.get("/ext/auth/ext_google_login")
 async def login(request: Request):
     redirect_uri = oauth.google.client_kwargs['redirect_uri']
@@ -51,12 +125,10 @@ async def login(request: Request):
 @app.get("/ext/auth/ext_google_auth")
 async def auth(request: Request):
     try:
-        # Get the authorization code from the redirect URL
         code = request.query_params.get('code')
         if not code:
             raise HTTPException(status_code=400, detail="Authorization code not found")
 
-        # Prepare the data for the token request
         data = {
             "code": code,
             "client_id": CLIENT_ID,
@@ -65,35 +137,25 @@ async def auth(request: Request):
             "grant_type": "authorization_code"
         }
 
-        # Send a POST request to the Google token endpoint
         response = requests.post("https://oauth2.googleapis.com/token", data=data)
 
-        # Check the response
         if response.status_code != 200:
             return JSONResponse(status_code=400, content={"error": "Failed to exchange authorization code for access token"})
 
-        # Parse the access token and auth token from the response
         token_response = response.json()
         access_token = token_response.get('access_token')
         auth_token = token_response.get('id_token')
         if not access_token or not auth_token:
             return JSONResponse(status_code=400, content={"error": "Access token or Auth token not found"})
 
-        # Get user info from the id_token
         user_info_response = requests.get(f'https://www.googleapis.com/oauth2/v1/userinfo?access_token={access_token}')
         user_info = user_info_response.json()
 
-        # Store user info in session
         request.session['user'] = user_info
 
         return {"access_token": access_token, "auth_token": auth_token, "user": user_info}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-@app.get("/")
-async def hello_world():
-    return 'Hello World!'
-
 
 @app.get("/ext/who_am_i")
 async def welcome(request: Request):
