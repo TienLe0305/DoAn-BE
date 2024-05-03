@@ -15,6 +15,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 
+from openai import OpenAI
+import os
+import sys
+
 load_dotenv()
 
 app = FastAPI()
@@ -77,20 +81,9 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.get("/ext/chat", response_class=StreamingResponse)
 async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: str = None):
-    headers = {
-         'Authorization': os.getenv("GPT_AUTHORIZATION")
-    }
-
-    if pdf_name:
-        data = {
-            'model': 'gpt-3.5-turbo',
-            'messages': conversation_context + [{'role': 'user', 'content': f"<pdf>{pdf_name}</pdf>"}],
-        }
-    else:
-        data = {
-            'model': 'gpt-3.5-turbo',
-            'messages': conversation_context + [{'role': 'user', 'content': query}],
-        }
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+    )
 
     user = await db['users'].find_one({"email": user_email})
     if not user:
@@ -99,41 +92,38 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
     user_id = user['id']
 
     async def event_generator():
-        for attempt in range(2):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post('https://api.openai.com/v1/chat/completions', headers=headers,
-                                            json=data) as response:
-                        if response.status == 200:
-                            openai_response = await response.json()
+        try:
+            stream = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages = [
+                {
+                    "role": "user",
+                    "content": query if not pdf_name else f"<pdf>{pdf_name}</pdf>"
+                }
+            ],
+                stream=True,
+            )
+            botResponse = ""
+            for chunk in stream:
+                print(chunk.choices[0].delta.content or "", end="")
+                botResponse += chunk.choices[0].delta.content or ""
+                data_to_send = f"event: response\ndata: {json.dumps({'text': chunk.choices[0].delta.content or ''})}\n\n"
+                yield data_to_send
 
-                            for part in openai_response['choices']:
-                                text = part['message']['content'] or ""
-                                botResponse = ""
+            conversation_context.append({"role": "user", "content": query})
+            conversation_context.append({"role": "assistant", "content": botResponse})
 
-                                for char in text:
-                                    botResponse += char
-                                    data_to_send = f"event: response\ndata: {json.dumps({'text': char})}\n\n"
-                                    yield data_to_send
+            if "Follow-up questions:" not in botResponse:
+                if pdf_name:
+                    await save_chat_history(f"<pdf>{pdf_name}</pdf>", botResponse, user_id, pdf_name)
+                else:
+                    await save_chat_history(query, botResponse, user_id)
 
-                                conversation_context.append({"role": "user", "content": query})
-                                conversation_context.append({"role": "assistant", "content": botResponse})
+            yield "event: done\ndata: {}\n\n"
+        except Exception as e:
+            print("OpenAI Response (Streaming) Error: " + str(e))
+            raise HTTPException(503, "OpenAI server is busy, try again later")
 
-                                if "Follow-up questions:" not in botResponse:
-                                    if pdf_name:
-                                        await save_chat_history(f"<pdf>{pdf_name}</pdf>", botResponse, user_id,
-                                                                pdf_name)
-                                    else:
-                                        await save_chat_history(query, botResponse, user_id)
-
-                                yield "event: done\ndata: {}\n\n"
-                                return
-                            else:
-                                error_message = await response.text()
-            except aiohttp.ClientError as e:
-                await asyncio.sleep(1)
-
-        yield "event: done\ndata: {}\n\n"
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 class JSONEncoder(json.JSONEncoder):
