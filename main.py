@@ -53,9 +53,7 @@ oauth.register(
     }
 )
 
-conversation_context = [
-    {"role": "system", "content": "You are a helpful assistant."}
-]
+conversation_context = []
 
 async def save_chat_history(user_ask: str, assistant_answer: str, user_id: str, pdf_name: str = None):
     if pdf_name:
@@ -95,12 +93,12 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
         try:
             stream = client.chat.completions.create(
                 model="gpt-3.5-turbo",
-                messages = [
-                {
-                    "role": "user",
-                    "content": query if not pdf_name else f"<pdf>{pdf_name}</pdf>"
-                }
-            ],
+                messages=conversation_context + [
+                    {
+                        "role": "user",
+                        "content": query
+                    }
+                ],
                 stream=True,
             )
             botResponse = ""
@@ -109,15 +107,23 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
                 botResponse += chunk.choices[0].delta.content or ""
                 data_to_send = f"event: response\ndata: {json.dumps({'text': chunk.choices[0].delta.content or ''})}\n\n"
                 yield data_to_send
+            query_text = query.split("- Finally")[0]
+            botResponse_text = botResponse.split("Follow-up questions:")[0]
 
-            conversation_context.append({"role": "user", "content": query})
-            conversation_context.append({"role": "assistant", "content": botResponse})
+            if not botResponse_text.strip():
+                botResponse_text = "How can I help you today?"
 
-            if "Follow-up questions:" not in botResponse:
-                if pdf_name:
-                    await save_chat_history(f"<pdf>{pdf_name}</pdf>", botResponse, user_id, pdf_name)
-                else:
-                    await save_chat_history(query, botResponse, user_id)
+            conversation_context.append({"role": "user", "content": query_text})
+            conversation_context.append({"role": "assistant", "content": botResponse_text})
+
+            conversation_context.append({"role": "user", "content": query_text})
+            conversation_context.append({"role": "assistant", "content": botResponse_text})
+
+            # if "Follow-up questions:" not in botResponse:
+            if pdf_name:
+                await save_chat_history(f"{pdf_name}", botResponse_text, user_id, pdf_name)
+            else:
+                await save_chat_history(query_text, botResponse_text, user_id)
 
             yield "event: done\ndata: {}\n\n"
         except Exception as e:
