@@ -17,7 +17,9 @@ from starlette.requests import Request
 
 from openai import OpenAI
 import os
-import sys
+from sentence_transformers import SentenceTransformer
+import faiss
+import numpy as np
 
 load_dotenv()
 
@@ -53,8 +55,6 @@ oauth.register(
     }
 )
 
-conversation_context = []
-
 async def save_chat_history(user_ask: str, assistant_answer: str, user_id: str, pdf_name: str = None):
     if pdf_name:
         document = {"user_id": user_id, "user_ask": f"<pdf>{pdf_name}</pdf>", "assistant_answer": assistant_answer}
@@ -63,22 +63,42 @@ async def save_chat_history(user_ask: str, assistant_answer: str, user_id: str, 
     result = await collection.insert_one(document)
     return result.inserted_id
 
+
+conversation_context = []
+model = None
+index = None
+chunks = []
+
 @app.post("/ext/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
+    global model, index, chunks
     try:
         pdf_contents = await file.read()
+        model = SentenceTransformer('all-MiniLM-L6-v2')
 
         with fitz.open(stream=pdf_contents, filetype="pdf") as pdf_file:
             text = ""
             for page in pdf_file:
                 text += page.get_text()
 
-        return {"pdf_text": text}
+        # Split the text into chunks
+        chunks = [text[i:i + 500] for i in range(0, len(text), 500)]  # Adjust chunk size as needed
+
+        # Encode the chunks into vectors
+        vectors1 = model.encode(chunks)
+
+        # Create a FAISS index and add the vectors
+        index = faiss.IndexFlatL2(model.get_sentence_embedding_dimension())
+        index.add(np.array(vectors1).astype('float32'))
+
+        return {"pdf_text": "PDF uploaded successfully"}
     except Exception as e:
         return {"error": str(e)}
 
+
 @app.get("/ext/chat", response_class=StreamingResponse)
-async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: str = None):
+async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: str = None, prompt: str = None):
+    global model, index, chunks
     client = OpenAI(
         api_key=os.getenv("OPENAI_API_KEY"),
     )
@@ -89,16 +109,32 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
 
     user_id = user['id']
 
+    def search_chunks(query):
+        if model is not None and index is not None and chunks:
+            query_vector = model.encode([query])
+            scores, indices = index.search(np.array(query_vector).astype('float32'), 5)
+            relevant_chunks = [chunks[i] for i in indices[0]]
+            return relevant_chunks
+        return []
+
     async def event_generator():
         try:
+            relevant_chunks = search_chunks(query)
+            context = "\n".join(relevant_chunks)
+
             stream = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=conversation_context + [
                     {
+                        "role": "system",
+                        "content": "You are a helpful assistant created by TienLV and your name is nebula." + (prompt if prompt else "")
+                    },
+                    {
                         "role": "user",
-                        "content": query
+                        "content": f"{query}\n\nContext:\n{context}"
                     }
                 ],
+                temperature=0.8,
                 stream=True,
             )
             botResponse = ""
@@ -113,15 +149,18 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
             if not botResponse_text.strip():
                 botResponse_text = "How can I help you today?"
 
-            conversation_context.append({"role": "user", "content": query_text})
-            conversation_context.append({"role": "assistant", "content": botResponse_text})
+            if prompt:
+                conversation_context.append({"role": "user", "content": prompt})
+                conversation_context.append({"role": "system", "content": botResponse_text})
 
             conversation_context.append({"role": "user", "content": query_text})
-            conversation_context.append({"role": "assistant", "content": botResponse_text})
+            conversation_context.append({"role": "system", "content": botResponse_text})
 
             # if "Follow-up questions:" not in botResponse:
             if pdf_name:
-                await save_chat_history(f"{pdf_name}", botResponse_text, user_id, pdf_name)
+                await save_chat_history(f"{ pdf_name}", botResponse_text, user_id, pdf_name)
+            elif prompt:
+                await save_chat_history(prompt, botResponse_text, user_id)
             else:
                 await save_chat_history(query_text, botResponse_text, user_id)
 
@@ -132,9 +171,11 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+
 class JSONEncoder(json.JSONEncoder):
     def default(self, o):
         return json_util.default(o)
+
 
 @app.get("/ext/chat_history")
 async def get_chat_history(user_email: str):
@@ -150,11 +191,13 @@ async def get_chat_history(user_email: str):
         chat_history.append(document)
     return JSONResponse(status_code=200, content=json.loads(JSONEncoder().encode(chat_history)))
 
+
 @app.get("/ext/auth/ext_google_login")
 async def login(request: Request):
     redirect_uri = oauth.google.client_kwargs['redirect_uri']
     authorization_url = await oauth.google.create_authorization_url(redirect_uri)
     return {"details": authorization_url, "scope": oauth.google.client_kwargs['scope'], "status": 200}
+
 
 @app.get("/ext/auth/ext_google_auth")
 async def auth(request: Request):
@@ -174,7 +217,8 @@ async def auth(request: Request):
         response = requests.post("https://oauth2.googleapis.com/token", data=data)
 
         if response.status_code != 200:
-            return JSONResponse(status_code=400, content={"error": "Failed to exchange authorization code for access token"})
+            return JSONResponse(status_code=400,
+                                content={"error": "Failed to exchange authorization code for access token"})
 
         token_response = response.json()
         access_token = token_response.get('access_token')
@@ -195,12 +239,14 @@ async def auth(request: Request):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
 @app.get("/ext/who_am_i")
 async def welcome(request: Request):
     user = request.session.get('user')
     if not user:
         return JSONResponse(status_code=400, content={"error": "User not found"})
     return {"details": user}
+
 
 if __name__ == "__main__":
     import uvicorn
