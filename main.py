@@ -21,6 +21,12 @@ from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
 
+from bs4 import BeautifulSoup
+from pydantic import BaseModel
+
+class URLRequest(BaseModel):
+    url: str
+
 load_dotenv()
 
 app = FastAPI()
@@ -65,7 +71,7 @@ async def save_chat_history(user_ask: str, assistant_answer: str, user_id: str, 
 
 
 conversation_context = []
-model = None
+model = SentenceTransformer('all-MiniLM-L6-v2')
 index = None
 chunks = []
 
@@ -74,7 +80,6 @@ async def upload_pdf(file: UploadFile = File(...)):
     global model, index, chunks
     try:
         pdf_contents = await file.read()
-        model = SentenceTransformer('all-MiniLM-L6-v2')
 
         with fitz.open(stream=pdf_contents, filetype="pdf") as pdf_file:
             text = ""
@@ -95,6 +100,30 @@ async def upload_pdf(file: UploadFile = File(...)):
     except Exception as e:
         return {"error": str(e)}
 
+@app.post("/ext/extract_from_url")
+async def extract_from_url(request: URLRequest):
+    url = request.url
+
+    global model, index, chunks
+    try:
+        # Tải nội dung HTML từ URL
+        response = requests.get(url)
+        html_content = response.content
+
+        # Sử dụng BeautifulSoup để trích xuất văn bản
+        soup = BeautifulSoup(html_content, 'html.parser')
+        text = soup.get_text()
+
+        # Xử lý văn bản tương tự như với PDF
+        chunks = [text[i:i + 500] for i in range(0, len(text), 500)]
+        vectors = model.encode(chunks)
+        index = faiss.IndexFlatL2(model.get_sentence_embedding_dimension())
+        index.add(np.array(vectors).astype('float32'))
+
+        return {"message": "Content extracted successfully from URL"}
+    except Exception as e:
+        return {"error": str(e)}
+
 
 @app.get("/ext/chat", response_class=StreamingResponse)
 async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: str = None, prompt: str = None):
@@ -112,7 +141,7 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
     def search_chunks(query):
         if model is not None and index is not None and chunks:
             query_vector = model.encode([query])
-            scores, indices = index.search(np.array(query_vector).astype('float32'), 5)
+            scores, indices = index.search(np.array(query_vector).astype('float32'), 20)
             relevant_chunks = [chunks[i] for i in indices[0]]
             return relevant_chunks
         return []
@@ -139,12 +168,12 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
             )
             botResponse = ""
             for chunk in stream:
-                print(chunk.choices[0].delta.content or "", end="")
                 botResponse += chunk.choices[0].delta.content or ""
                 data_to_send = f"event: response\ndata: {json.dumps({'text': chunk.choices[0].delta.content or ''})}\n\n"
                 yield data_to_send
             query_text = query.split("- Finally")[0]
             botResponse_text = botResponse.split("Follow-up questions:")[0]
+
 
             if not botResponse_text.strip():
                 botResponse_text = "How can I help you today?"
