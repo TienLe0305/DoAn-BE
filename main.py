@@ -124,6 +124,18 @@ async def extract_from_url(request: URLRequest):
     except Exception as e:
         return {"error": str(e)}
 
+def keep_recent_context(conversation_context, n):
+    # Kiểm tra xem conversation_context có đủ dài không
+    if len(conversation_context) < n * 2:
+        return conversation_context
+
+    # Giữ lại n cặp câu hỏi và câu trả lời gần nhất
+    recent_context = []
+    for i in range(len(conversation_context) - n * 2, len(conversation_context), 2):
+        recent_context.append(conversation_context[i])
+        recent_context.append(conversation_context[i + 1])
+    return recent_context
+
 
 @app.get("/ext/chat", response_class=StreamingResponse)
 async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: str = None, prompt: str = None):
@@ -151,9 +163,13 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
             relevant_chunks = search_chunks(query)
             context = "\n".join(relevant_chunks)
 
+            recent_context = keep_recent_context(conversation_context, 5)
+
+            print(recent_context)
+
             stream = client.chat.completions.create(
                 model="gpt-3.5-turbo",
-                messages=conversation_context + [
+                messages=recent_context + [
                     {
                         "role": "system",
                         "content": "You are a helpful assistant created by TienLV and your name is nebula." + (prompt if prompt else "")
