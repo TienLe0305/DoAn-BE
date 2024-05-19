@@ -1,0 +1,9 @@
+fitz
+fastapi
+bson
+dotenv
+openai
+faiss-cpu
+bs4
+pydantic
+sentence_transformers
