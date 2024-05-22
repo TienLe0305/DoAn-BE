@@ -6,15 +6,13 @@ from utils import save_chat_history, keep_recent_context
 import json
 from models import JSONEncoder
 from fastapi.responses import JSONResponse, StreamingResponse
-from sentence_transformers import SentenceTransformer
 from rag import search_chunks
-import numpy as np
 
 router = APIRouter()
 conversation_context = []
 
 @router.get("/ext/chat", response_class=StreamingResponse)
-async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: str = None, prompt: str = None):
+async def chat(query: str = Query(...), user_email: str = Query(...), file_name: str = None, prompt: str = None):
     client = OpenAI(
         api_key=OPENAI_API_KEY,
     )
@@ -33,13 +31,14 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
 
             recent_context = keep_recent_context(conversation_context, 5)
 
+            system_prompt = "You are a helpful assistant created by TienLV, and your name is Nebula. You are designed to assist users with various tasks and provide information based on the given context. Please respond in a clear, concise, and informative manner."
+            if prompt:
+                system_prompt += prompt
+
             stream = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=recent_context + [
-                    {
-                        "role": "system",
-                        "content": "You are a helpful assistant created by TienLV and your name is nebula." + (prompt if prompt else "")
-                    },
+                    {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
                         "content": f"{query}\n\nContext:\n{context}"
@@ -66,8 +65,8 @@ async def chat(query: str = Query(...), user_email: str = Query(...), pdf_name: 
             conversation_context.append({"role": "user", "content": query_text})
             conversation_context.append({"role": "system", "content": botResponse_text})
 
-            if pdf_name:
-                await save_chat_history(f"<pdf>{pdf_name}</pdf>", botResponse_text, user_id, pdf_name)
+            if file_name:
+                await save_chat_history(f"<file>{file_name}</file>", botResponse_text, user_id, file_name)
             elif prompt:
                 await save_chat_history(prompt, botResponse_text, user_id)
             else:

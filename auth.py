@@ -56,8 +56,15 @@ async def auth(request: Request):
 
         db = await get_db()
         users_collection = db['users']
-        user_document = {"id": user_info["id"], "email": user_info["email"]}
-        await users_collection.insert_one(user_document)
+        existing_user = await users_collection.find_one({"id": user_info["id"]})
+        if existing_user:
+            await users_collection.update_one({"id": user_info["id"]}, {"$set": {"email": user_info["email"]}})
+        else:
+            user_document = {
+                "id": user_info["id"],
+                "email": user_info["email"]
+            }
+            await users_collection.insert_one(user_document)
 
         request.session['user'] = user_info
 
