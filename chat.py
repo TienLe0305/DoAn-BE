@@ -12,7 +12,7 @@ router = APIRouter()
 conversation_context = []
 
 @router.get("/ext/chat", response_class=StreamingResponse)
-async def chat(query: str = Query(...), user_email: str = Query(...), file_name: str = None, prompt: str = None):
+async def chat(query: str = Query(...), user_email: str = Query(...), file_name: str = None, prompt: str = None, language: str = Query('en')):
     client = OpenAI(
         api_key=OPENAI_API_KEY,
     )
@@ -31,7 +31,7 @@ async def chat(query: str = Query(...), user_email: str = Query(...), file_name:
 
             recent_context = keep_recent_context(conversation_context, 5)
 
-            system_prompt = "You are a helpful assistant created by TienLV, and your name is Nebula. You are designed to assist users with various tasks and provide information based on the given context. Please respond in a clear, concise, and informative manner."
+            system_prompt = f"You are a helpful assistant created by TienLV, and your name is Nebula. You are designed to assist users with various tasks and provide information based on the given context. Please respond in a clear, concise, and informative manner. The current language is {language}."
             if prompt:
                 system_prompt += prompt
 
