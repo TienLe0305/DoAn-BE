@@ -3,6 +3,7 @@ import requests
 from config import CLIENT_ID, CLIENT_SECRET
 from database import get_db
 from authlib.integrations.starlette_client import OAuth
+from datetime import datetime, timedelta
 
 router = APIRouter()
 oauth = OAuth()
@@ -48,6 +49,8 @@ async def auth(request: Request):
         token_response = response.json()
         access_token = token_response.get('access_token')
         auth_token = token_response.get('id_token')
+        expires_in = token_response.get('expires_in')
+
         if not access_token or not auth_token:
             return responses.JSONResponse(status_code=400, content={"error": "Access token or Auth token not found"})
 
@@ -67,13 +70,25 @@ async def auth(request: Request):
             await users_collection.insert_one(user_document)
 
         request.session['user'] = user_info
+        request.session['auth_token'] = auth_token
+        request.session['access_token'] = access_token
+        expiration_time = datetime.now() + timedelta(seconds=expires_in)
+        request.session['auth_token_expiration'] = expiration_time.timestamp()
 
-        return {"access_token": access_token, "auth_token": auth_token, "user": user_info}
+        return {"access_token": access_token, "auth_token": auth_token, "expires_in": expires_in, "user": user_info}
     except Exception as e:
         return responses.JSONResponse(status_code=500, content={"error": str(e)})
 
+
 @router.get("/ext/who_am_i")
 async def welcome(request: Request):
+    auth_token_expiration_timestamp = request.session.get('auth_token_expiration')
+    if auth_token_expiration_timestamp:
+        auth_token_expiration = datetime.fromtimestamp(auth_token_expiration_timestamp)
+        if auth_token_expiration < datetime.now():
+            # auth_token đã hết hạn
+            return responses.JSONResponse(status_code=401, content={"error": "Auth token expired"})
+
     user = request.session.get('user')
     if not user:
         return responses.JSONResponse(status_code=400, content={"error": "User not found"})
