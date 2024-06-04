@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from chat import chat, get_chat_history
+from chat import chat, get_chat_history, clear_context
 from image import upload_image
 from pdf import upload_file
 from web import extract_from_url
@@ -8,6 +8,7 @@ from auth import login, auth, welcome
 router = APIRouter()
 
 router.get("/ext/chat")(chat)
+router.get("/ext/clear_context")(clear_context)
 router.get("/ext/chat_history")(get_chat_history)
 router.get("/ext/auth/ext_google_login")(login)
 router.get("/ext/auth/ext_google_auth")(auth)

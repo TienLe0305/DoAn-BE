@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException, responses
 import requests
-from config import CLIENT_ID, CLIENT_SECRET
+from config import CLIENT_ID, CLIENT_SECRET, REDIRECT_URI
 from database import get_db
 from authlib.integrations.starlette_client import OAuth
 from datetime import datetime, timedelta
@@ -15,7 +15,7 @@ oauth.register(
     client_kwargs={
         'scope': 'openid email profile',
         'response_type': 'code',
-        'redirect_uri': 'http://127.0.0.1:8002/ext/auth/code'
+        'redirect_uri': REDIRECT_URI
     }
 )
 
@@ -36,7 +36,7 @@ async def auth(request: Request):
             "code": code,
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
-            "redirect_uri": "http://127.0.0.1:8002/ext/auth/code",
+            "redirect_uri": REDIRECT_URI,
             "grant_type": "authorization_code"
         }
 

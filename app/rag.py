@@ -6,6 +6,11 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 index = None
 chunks = []
 
+def reset_memory():
+    global index, chunks
+    index = None
+    chunks = []
+
 def process_text(text):
     global model, index, chunks
     chunks = [text[i:i + 500] for i in range(0, len(text), 500)]

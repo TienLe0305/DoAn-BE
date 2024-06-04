@@ -1,6 +1,6 @@
 from fastapi import APIRouter, File, UploadFile
 import fitz
-from rag import process_text
+from rag import process_text, reset_memory
 from docx import Document
 import tempfile
 
@@ -33,6 +33,7 @@ async def upload_file(file: UploadFile = File(...)):
         else:
             return {"error": "Unsupported file format"}
 
+        reset_memory()
         process_text(text)
         return {"File uploaded successfully"}
     except Exception as e:

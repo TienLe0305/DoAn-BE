@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query, HTTPException
 from openai import OpenAI
-from config import OPENAI_API_KEY
+from config import OPENAI_API_KEY, GEMINI_API_KEY
 from database import get_db
 from utils import save_chat_history, keep_recent_context
 import json
@@ -11,8 +11,14 @@ from rag import search_chunks
 router = APIRouter()
 conversation_context = []
 
+@router.get("/ext/clear_context")
+async def clear_context():
+    global conversation_context
+    conversation_context = []
+    return {"message": "Recent context cleared successfully"}
+
 @router.get("/ext/chat", response_class=StreamingResponse)
-async def chat(query: str = Query(...), user_email: str = Query(...), file_name: str = None, prompt: str = None, language: str = Query('en')):
+async def chat(query: str = Query(...), user_email: str = Query(...), file_name: str = None, prompt: str = None, language: str = Query('en'), include_context: bool = False):
     client = OpenAI(
         api_key=OPENAI_API_KEY,
     )
@@ -26,10 +32,13 @@ async def chat(query: str = Query(...), user_email: str = Query(...), file_name:
 
     async def event_generator():
         try:
-            relevant_chunks = search_chunks(query)
-            context = "\n".join(relevant_chunks)
+            context = ""
+            if include_context:
+                relevant_chunks = search_chunks(query)
+                context = "\n".join(relevant_chunks)
 
             recent_context = keep_recent_context(conversation_context, 5)
+
 
             system_prompt = f"You are a helpful assistant created by TienLV, and your name is Nebula. You are designed to assist users with various tasks and provide information based on the given context. Please respond in a clear, concise, and informative manner. The current language is {language}."
             if prompt:
@@ -44,7 +53,7 @@ async def chat(query: str = Query(...), user_email: str = Query(...), file_name:
                         "content": f"{query}\n\nContext:\n{context}"
                     }
                 ],
-                temperature= 0.8,
+                temperature=0.8,
                 stream=True,
             )
             botResponse = ""

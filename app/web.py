@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from models import URLRequest
 import requests
 from bs4 import BeautifulSoup
-from rag import process_text
+from rag import process_text, reset_memory
 
 router = APIRouter()
 
@@ -17,6 +17,7 @@ async def extract_from_url(request: URLRequest):
         soup = BeautifulSoup(html_content, 'html.parser')
         text = soup.get_text()
 
+        reset_memory()
         process_text(text)
 
         return {"message": "Content extracted successfully from URL"}

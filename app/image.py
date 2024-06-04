@@ -25,6 +25,7 @@ def get_image_description(image_bytes):
             image = image.convert("RGB")
 
         caption = generate_image_caption(image)
+        print(caption)
 
         return caption
     except Exception as e:
